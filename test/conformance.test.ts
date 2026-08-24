@@ -78,6 +78,21 @@ test('versi kontrak di library sama dengan di YAML', () => {
   assert.strictEqual(CONTRACT_VERSION, loadContract().version);
 });
 
+test('golden file contains every required contract metric', () => {
+  const goldenNames = new Set(
+    fs
+      .readFileSync(goldenPath(), 'utf8')
+      .trim()
+      .split('\n')
+      .map((shape) => shape.split('{')[0].replace(/_(bucket|sum|count)$/, ''))
+  );
+
+  for (const metric of loadContract().metrics) {
+    if (metric.optional) continue;
+    assert.ok(goldenNames.has(metric.name), `golden file is missing "${metric.name}"`);
+  }
+});
+
 test('bucket histogram sama persis dengan kontrak', () => {
   const contract = loadContract();
   const duration = contract.metrics.find((m) => m.name === 'http_server_duration_seconds');

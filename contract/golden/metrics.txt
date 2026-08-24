@@ -1,0 +1,12 @@
+app_build_info{commit,contract_version,description,display_name,env,lang,public,replica_id,service,tier,version}
+dependency_duration_seconds_bucket{dependency,env,le,operation,outcome,replica_id,service}
+dependency_duration_seconds_count{dependency,env,operation,outcome,replica_id,service}
+dependency_duration_seconds_sum{dependency,env,operation,outcome,replica_id,service}
+http_server_duration_seconds_bucket{env,le,method,replica_id,route,service,status_class}
+http_server_duration_seconds_count{env,method,replica_id,route,service,status_class}
+http_server_duration_seconds_sum{env,method,replica_id,route,service,status_class}
+http_server_requests_in_flight{env,replica_id,service}
+http_server_requests_total{env,method,replica_id,route,service,status,status_class}
+http_server_response_bytes_total{env,method,replica_id,route,service,status_class}
+obs_route_cardinality{env,replica_id,service}
+obs_route_overflow_total{env,replica_id,service}

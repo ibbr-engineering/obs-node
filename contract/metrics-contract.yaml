@@ -1,0 +1,170 @@
+# SUMBER KEBENARAN nama metrik & label.
+# Setiap implementasi library (Node, Go) divalidasi terhadap file ini
+# lewat conformance test. Beda sedikit = build merah.
+#
+# Perubahan file ini WAJIB disertai entri di CHANGELOG.md.
+# Breaking change (rename/hapus metrik, rename/hapus label) = bump major.
+
+version: 1.5.0
+
+metrics:
+  # ---- HTTP server (RED) -------------------------------------------------
+  # replica_id (1.3.0): dibutuhkan supaya beberapa instance Cloud Run yang
+  # sama-sama autoscale tidak menimpa satu sama lain sebagai satu series.
+  # Lihat CHANGELOG.md 1.3.0 untuk kenapa ini penting — bukan sekadar
+  # kosmetik "jumlah replica", tapi korektnes rate()/increase() itu sendiri
+  # begitu lebih dari satu instance aktif bersamaan.
+  - name: http_server_requests_total
+    type: counter
+    help: Total HTTP request yang diterima server.
+    labels: [service, env, method, route, status_class, status, replica_id]
+
+  - name: http_server_duration_seconds
+    type: histogram
+    help: Durasi penanganan HTTP request dalam detik.
+    labels: [service, env, method, route, status_class, replica_id]
+    buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+
+  # Counter, bukan histogram (1.4.0). Pertanyaan yang dijawab metrik ini
+  # adalah "berapa egress service ini" dan "route mana yang paling gemuk" —
+  # keduanya cukup dengan rate()/topk. Histogram ukuran respons akan
+  # mengalikan seri metrik ini ~12x per route, dan repo ini punya plafon
+  # kardinalitas 40 route/service yang harus dihormati. Egress lintas-cloud
+  # adalah biaya nyata selama migrasi (blueprint §1), jadi total byte lebih
+  # berguna daripada distribusi ukurannya.
+  - name: http_server_response_bytes_total
+    type: counter
+    help: Total byte body respons yang dikirim server.
+    labels: [service, env, method, route, status_class, replica_id]
+
+  - name: http_server_requests_in_flight
+    type: gauge
+    help: Jumlah HTTP request yang sedang diproses.
+    labels: [service, env, replica_id]
+
+  # ---- Identitas build ---------------------------------------------------
+  # display_name/description/public: sumber tunggal identitas publik service,
+  # dipakai status page (discovery otomatis, bukan daftar hardcode) dan
+  # Perses (label service mentah -> nama yang bisa dibaca orang). Kosong
+  # ("") untuk service yang belum diisi; public="false" berarti tidak
+  # ditampilkan di status page publik meski tetap termonitor di Perses.
+  - name: app_build_info
+    type: gauge
+    help: Selalu bernilai 1. Label membawa identitas build & versi kontrak.
+    labels: [service, env, version, commit, tier, contract_version, lang, display_name, description, public, replica_id]
+
+  # ---- Kesehatan instrumentasi itu sendiri -------------------------------
+  # Tanpa ini, cardinality guard bekerja diam-diam dan tidak ada yang tahu
+  # berapa banyak trafik yang jatuh ke __other__. replica_id: route table
+  # ada PER PROSES (in-memory), jadi tiap replica punya angkanya sendiri —
+  # tanpa label ini, replica yang baru boot (tabel kosong) dan yang sudah
+  # lama jalan (tabel penuh) akan saling menimpa di satu series yang sama.
+  - name: obs_route_cardinality
+    type: gauge
+    help: Jumlah template route unik yang sedang dilacak service ini.
+    labels: [service, env, replica_id]
+
+  - name: obs_route_overflow_total
+    type: counter
+    help: Jumlah request yang jatuh ke label route __other__.
+    labels: [service, env, replica_id]
+
+  # ---- Dependency (opsional, dipakai bila service punya dependency) ------
+  - name: dependency_duration_seconds
+    type: histogram
+    help: Durasi panggilan ke dependency eksternal.
+    labels: [service, env, dependency, operation, outcome, replica_id]
+    buckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5]
+    optional: true
+
+  # ---- Nilai produk (opsional, 1.5.0) ------------------------------------
+  # Dipakai FinOps Platform Delivery sebagai PENYEBUT: "tokens per task
+  # completed" dan kepuasan pemakai. Numeratornya (token) TIDAK ada di sini
+  # dan tidak boleh ada — token dicatat gateway LLM ke BigQuery, karena itu
+  # data biaya per-pemakai, bukan telemetri.
+  #
+  # Kenapa penyebutnya justru boleh jadi metrik: menghitung "berapa task
+  # selesai" tidak butuh tahu SIAPA yang menyelesaikannya. Begitu label
+  # user_id ikut, metrik ini langsung ditolak library (forbidden_label_keys)
+  # — dan itu memang benar.
+  #
+  # Apa yang dihitung sebagai satu "task" HANYA bisa didefinisikan pembuat
+  # app-nya. Platform tidak menebak. Konsekuensinya app yang tidak pernah
+  # melapor akan absen, bukan bernilai nol — dan rasio di FinOps memang
+  # sengaja mengeluarkannya dari pembilang maupun penyebut.
+  - name: app_task_completed_total
+    type: counter
+    help: Jumlah unit kerja bermakna yang diselesaikan pemakai app. Definisi "task" milik app.
+    labels: [service, env, task_type, outcome, replica_id]
+    optional: true
+
+  # score sengaja jadi label: nilainya 1..5, lima series per app — murah, dan
+  # membuat distribusi bisa dibaca tanpa histogram. Komentar bebas TIDAK
+  # boleh jadi label (PHI + kardinalitas tak terbatas); simpan di gateway.
+  - name: app_rating_total
+    type: counter
+    help: Jumlah rating yang dikirim pemakai app. Hanya skor, tanpa komentar.
+    labels: [service, env, score, replica_id]
+    optional: true
+
+  # Pendamping wajib app_rating_total kalau prompt-nya berulang (tiap 15 menit
+  # selama belum diisi). Menanyakan berulang menggeser SIAPA yang menjawab —
+  # yang bertahan sampai mengisi cenderung yang paling kesal atau paling
+  # patuh. Tanpa metrik ini, pergeseran itu tidak meninggalkan jejak sama
+  # sekali dan skornya terlihat seperti angka yang bersih.
+  # outcome: shown | submitted | dismissed.
+  - name: app_rating_prompt_total
+    type: counter
+    help: Jumlah prompt rating yang ditampilkan, beserta hasilnya.
+    labels: [service, env, outcome, replica_id]
+    optional: true
+
+  # ---- RUM (opsional, cuma dipakai app browser tanpa server sendiri) -----
+  # Diisi lewat rum-collector (stack/rum-collector): browser kirim beacon,
+  # collector yang expose /metrics ke Prometheus — bukan browser scrape
+  # langsung. route sudah ditemplate di sisi browser sebelum dikirim (heuristik
+  # yang sama dengan lapis 2 backend), jadi ID mentah tidak pernah transit.
+  - name: rum_page_view_total
+    type: counter
+    help: Jumlah page view / perpindahan rute di browser.
+    labels: [service, route]
+    optional: true
+
+  - name: rum_page_load_duration_seconds
+    type: histogram
+    help: Durasi render halaman di browser, dari navigasi sampai selesai.
+    labels: [service, route]
+    buckets: [0.1, 0.25, 0.5, 1, 2, 4, 8, 16]
+    optional: true
+
+  - name: rum_js_error_total
+    type: counter
+    help: Jumlah error JS tak tertangani di browser. Pesan error TIDAK jadi label — potensi PHI dan kardinalitas tak terbatas.
+    labels: [service, route]
+    optional: true
+
+constraints:
+  max_routes_per_service: 40
+  # Plafon terpisah untuk task_type, dengan mekanisme overflow yang sama.
+  # Lebih ketat dari route karena task didefinisikan manusia non-teknis lewat
+  # vibe coding — string bebas yang tanpa plafon akan meledak jadi seri.
+  max_task_types_per_service: 20
+  overflow_label: "__other__"
+  status_classes: ["1xx", "2xx", "3xx", "4xx", "5xx"]
+  # Label dengan nama ini ditolak library saat runtime — bukan saat review.
+  # Metrik plaintext lewat VPC, jadi ini pengaman PHI yang sesungguhnya.
+  forbidden_label_keys:
+    - email
+    - phone
+    - nik
+    - patient_id
+    - mrn
+    - name
+    - address
+    - user_id
+    - session_id
+  # Nilai label yang cocok pola ini ditolak, apa pun nama labelnya.
+  forbidden_label_value_patterns:
+    - "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"   # email
+    - "^\\+?62[0-9]{8,13}$"                                # nomor HP Indonesia
+    - "^[0-9]{16}$"                                        # NIK

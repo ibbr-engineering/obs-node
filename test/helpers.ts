@@ -1,20 +1,7 @@
-import * as fs from 'fs';
 import * as path from 'path';
 
-/**
- * Cari akar repo dengan menaiki direktori sampai menemukan contract/.
- * Dipakai supaya test tetap benar baik dijalankan dari src/ maupun dari
- * hasil kompilasi di dist-test/.
- */
 export function repoRoot(from: string = __dirname): string {
-  let dir = from;
-  for (let i = 0; i < 8; i += 1) {
-    if (fs.existsSync(path.join(dir, 'contract', 'metrics-contract.yaml'))) return dir;
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  throw new Error(`contract/metrics-contract.yaml tidak ditemukan dari ${from}`);
+  return path.resolve(from, '..', '..');
 }
 
 export function contractPath(): string {
@@ -25,10 +12,7 @@ export function goldenPath(): string {
   return path.join(repoRoot(), 'contract', 'golden', 'metrics.txt');
 }
 
-/**
- * Ubah teks eksposisi Prometheus jadi daftar "nama{label,label}" yang stabil.
- * Nilai sengaja dibuang — yang dikontrak adalah bentuk, bukan angkanya.
- */
+/** Return stable Prometheus shapes without sample values. */
 export function shapeOf(exposition: string): string[] {
   const shapes = new Set<string>();
 
@@ -55,7 +39,7 @@ export function shapeOf(exposition: string): string[] {
   return [...shapes].sort();
 }
 
-/** Respons palsu secukupnya untuk menjalankan middleware tanpa server HTTP. */
+/** Return a minimal response double for middleware tests. */
 export function fakeRes(statusCode = 200): any {
   const listeners: Record<string, Array<() => void>> = {};
   return {
