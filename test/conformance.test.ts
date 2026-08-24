@@ -56,7 +56,7 @@ async function exerciseSampleApp(): Promise<string> {
   const tight = initObservability({
     service: 'conformance-app',
     tier: 'T1',
-    maxRoutes: 1,
+    maxRoutes: 2,
     defaultMetrics: false,
     logger: () => undefined,
   });

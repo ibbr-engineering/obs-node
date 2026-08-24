@@ -13,6 +13,13 @@ export type { Tier } from './contract';
 
 export type Transport = 'scrape' | 'push' | 'both';
 
+export class ObservabilityConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ObservabilityConfigError';
+  }
+}
+
 export interface ObservabilityConfig {
   /** Harus sama persis dengan label `service` di targets/apps.yml. */
   service: string;
@@ -94,6 +101,7 @@ const defaultLogger = (event: Record<string, unknown>): void => {
 };
 
 export function initObservability(config: ObservabilityConfig): Observability {
+  validateConfig(config);
   const service = config.service;
   const transport: Transport = config.transport ?? 'scrape';
   const metricsPath = config.metricsPath ?? '/metrics';
@@ -292,6 +300,43 @@ export function initObservability(config: ObservabilityConfig): Observability {
     pushOnce: () => pusher?.pushOnce() ?? Promise.resolve(),
     shutdown: () => pusher?.stop(),
   };
+}
+
+function validateConfig(config: ObservabilityConfig): void {
+  if (typeof config.service !== 'string' || config.service.trim() === '') {
+    throw new ObservabilityConfigError('service must be a non-empty string');
+  }
+  if (!['T1', 'T2', 'T3'].includes(config.tier)) {
+    throw new ObservabilityConfigError('tier must be T1, T2, or T3');
+  }
+  if (config.transport !== undefined && !['scrape', 'push', 'both'].includes(config.transport)) {
+    throw new ObservabilityConfigError('transport must be scrape, push, or both');
+  }
+  if (config.maxRoutes !== undefined && (!Number.isInteger(config.maxRoutes) || config.maxRoutes < 2)) {
+    throw new ObservabilityConfigError('maxRoutes must be an integer greater than or equal to 2');
+  }
+  if (
+    config.pushIntervalMs !== undefined &&
+    (!Number.isFinite(config.pushIntervalMs) || config.pushIntervalMs <= 0)
+  ) {
+    throw new ObservabilityConfigError('pushIntervalMs must be greater than zero');
+  }
+
+  const transport = config.transport ?? 'scrape';
+  if (transport !== 'push' && transport !== 'both') return;
+
+  const endpoint = config.otlpEndpoint ?? process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? 'http://localhost:4318';
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    throw new ObservabilityConfigError('otlpEndpoint must be a valid URL');
+  }
+
+  const localHosts = new Set(['localhost', '127.0.0.1', '[::1]']);
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && localHosts.has(url.hostname))) {
+    throw new ObservabilityConfigError('otlpEndpoint must use HTTPS outside localhost');
+  }
 }
 
 /**

@@ -199,7 +199,7 @@ export class OtlpPusher {
   start(): void {
     if (this.timer) return;
     this.timer = setInterval(() => {
-      void this.pushOnce();
+      void this.pushOnce().catch((err: Error) => this.options.onError?.(err));
     }, this.options.intervalMs);
     // Jangan menahan proses tetap hidup hanya demi mengirim metrik.
     this.timer.unref?.();
@@ -212,38 +212,30 @@ export class OtlpPusher {
   }
 
   async pushOnce(): Promise<void> {
-    try {
-      this.options.beforeCollect?.();
-      const metrics = (await this.options.registry.getMetricsAsJSON()) as unknown as PromMetric[];
-      const nowNano = String(Date.now() * 1e6);
+    this.options.beforeCollect?.();
+    const metrics = (await this.options.registry.getMetricsAsJSON()) as unknown as PromMetric[];
+    const nowNano = String(Date.now() * 1e6);
 
-      const body = JSON.stringify({
-        resourceMetrics: [
-          {
-            resource: {
-              attributes: [
-                { key: 'service.name', value: { stringValue: this.options.serviceName } },
-              ],
-            },
-            scopeMetrics: [
-              {
-                // Scope sengaja dikosongkan. Kalau diisi, exporter
-                // prometheusremotewrite menambahkan label otel_scope_name dan
-                // otel_scope_version yang tidak ada padanannya di jalur
-                // scrape — dan himpunan label kedua transport harus identik.
-                scope: {},
-                metrics: toOtlpJson(metrics, this.startTimeNano, nowNano),
-              },
+    const body = JSON.stringify({
+      resourceMetrics: [
+        {
+          resource: {
+            attributes: [
+              { key: 'service.name', value: { stringValue: this.options.serviceName } },
             ],
           },
-        ],
-      });
+          scopeMetrics: [
+            {
+              // An empty scope keeps push labels identical to scrape labels.
+              scope: {},
+              metrics: toOtlpJson(metrics, this.startTimeNano, nowNano),
+            },
+          ],
+        },
+      ],
+    });
 
-      await this.post(body);
-    } catch (err) {
-      // Kegagalan mengirim metrik tidak boleh pernah menjatuhkan aplikasi.
-      this.options.onError?.(err as Error);
-    }
+    await this.post(body);
   }
 
   private post(body: string): Promise<void> {
