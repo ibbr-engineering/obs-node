@@ -1,23 +1,14 @@
-/**
- * Cermin dari contract/metrics-contract.yaml.
- *
- * Sengaja di-hardcode, bukan dibaca dari file saat runtime: aplikasi tidak
- * boleh butuh file kontrak ikut ter-deploy. Yang menjaga keduanya sinkron
- * adalah conformance test (test/conformance.test.ts), yang membaca YAML asli
- * dan membandingkannya dengan konstanta di file ini. Beda sedikit = build merah.
- */
-
-export const CONTRACT_VERSION = '1.5.0';
+export const CONTRACT_VERSION = "1.5.0";
 
 export const METRIC = {
-  requests: 'http_server_requests_total',
-  duration: 'http_server_duration_seconds',
-  inFlight: 'http_server_requests_in_flight',
-  responseBytes: 'http_server_response_bytes_total',
-  buildInfo: 'app_build_info',
-  routeCardinality: 'obs_route_cardinality',
-  routeOverflow: 'obs_route_overflow_total',
-  dependency: 'dependency_duration_seconds',
+  requests: "http_server_requests_total",
+  duration: "http_server_duration_seconds",
+  inFlight: "http_server_requests_in_flight",
+  responseBytes: "http_server_response_bytes_total",
+  buildInfo: "app_build_info",
+  routeCardinality: "obs_route_cardinality",
+  routeOverflow: "obs_route_overflow_total",
+  dependency: "dependency_duration_seconds",
 } as const;
 
 export const DURATION_BUCKETS = [
@@ -29,51 +20,77 @@ export const DEPENDENCY_BUCKETS = [
 ] as const;
 
 export const LABELS = {
-  requests: ['service', 'env', 'method', 'route', 'status_class', 'status', 'replica_id'],
-  duration: ['service', 'env', 'method', 'route', 'status_class', 'replica_id'],
-  responseBytes: ['service', 'env', 'method', 'route', 'status_class', 'replica_id'],
-  inFlight: ['service', 'env', 'replica_id'],
-  buildInfo: [
-    'service', 'env', 'version', 'commit', 'tier', 'contract_version', 'lang',
-    'display_name', 'description', 'public', 'replica_id',
+  requests: [
+    "service",
+    "env",
+    "method",
+    "route",
+    "status_class",
+    "status",
+    "replica_id",
   ],
-  routeCardinality: ['service', 'env', 'replica_id'],
-  routeOverflow: ['service', 'env', 'replica_id'],
-  dependency: ['service', 'env', 'dependency', 'operation', 'outcome', 'replica_id'],
+  duration: ["service", "env", "method", "route", "status_class", "replica_id"],
+  responseBytes: [
+    "service",
+    "env",
+    "method",
+    "route",
+    "status_class",
+    "replica_id",
+  ],
+  inFlight: ["service", "env", "replica_id"],
+  buildInfo: [
+    "service",
+    "env",
+    "version",
+    "commit",
+    "tier",
+    "contract_version",
+    "lang",
+    "display_name",
+    "description",
+    "public",
+    "replica_id",
+  ],
+  routeCardinality: ["service", "env", "replica_id"],
+  routeOverflow: ["service", "env", "replica_id"],
+  dependency: [
+    "service",
+    "env",
+    "dependency",
+    "operation",
+    "outcome",
+    "replica_id",
+  ],
 } as const;
 
 export const MAX_ROUTES_PER_SERVICE = 40;
-export const OVERFLOW_ROUTE = '__other__';
+export const OVERFLOW_ROUTE = "__other__";
 
-/** Label yang tidak boleh ada, apa pun nilainya. */
 export const FORBIDDEN_LABEL_KEYS: readonly string[] = [
-  'email',
-  'phone',
-  'nik',
-  'patient_id',
-  'mrn',
-  'name',
-  'address',
-  'user_id',
-  'session_id',
+  "email",
+  "phone",
+  "nik",
+  "patient_id",
+  "mrn",
+  "name",
+  "address",
+  "user_id",
+  "session_id",
 ];
 
-/**
- * Nilai yang cocok pola ini ditolak apa pun nama labelnya — karena PHI bisa
- * menyelinap lewat label yang namanya tampak tidak berbahaya.
- */
 export const FORBIDDEN_VALUE_PATTERNS: readonly RegExp[] = [
-  /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/, // email
-  /^\+?62[0-9]{8,13}$/, // nomor HP Indonesia
-  /^[0-9]{16}$/, // NIK
+  /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/,
+  /^\+?62[0-9]{8,13}$/,
+  /^[0-9]{16}$/,
 ];
 
-export type Tier = 'T1' | 'T2' | 'T3';
+export type Tier = "T1" | "T2" | "T3";
 
 export function statusClass(status: number): string {
-  if (status >= 500) return '5xx';
-  if (status >= 400) return '4xx';
-  if (status >= 300) return '3xx';
-  if (status >= 200) return '2xx';
-  return '1xx';
+  if (status >= 500) return "5xx";
+  if (status >= 400) return "4xx";
+  if (status >= 300) return "3xx";
+  if (status >= 200) return "2xx";
+  return "1xx";
 }

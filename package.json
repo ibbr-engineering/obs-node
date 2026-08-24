@@ -34,7 +34,7 @@
     "contract:sync": "node scripts/sync-contract.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "pretest": "tsc -p tsconfig.test.json",
-    "test": "node --test dist-test/test/*.test.js",
+    "test": "mocha --timeout 10000 \"dist-test/test/*.test.js\"",
     "test:git-install": "node scripts/test-git-install.mjs",
     "prepare": "npm run build",
     "prepack": "npm run build",
@@ -48,8 +48,10 @@
     "@loopback/context": "^6.1.5",
     "@loopback/core": "^5.1.5",
     "@loopback/rest": "^13.1.5",
+    "@types/mocha": "^10.0.10",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.14.0",
+    "mocha": "^10.8.2",
     "typescript": "^5.5.0"
   },
   "peerDependencies": {

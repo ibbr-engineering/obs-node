@@ -4,36 +4,27 @@ import {
   Histogram,
   Registry,
   collectDefaultMetrics,
-} from 'prom-client';
+} from "prom-client";
 import {
   CONTRACT_VERSION,
   DEPENDENCY_BUCKETS,
   DURATION_BUCKETS,
   LABELS,
   METRIC,
-} from './contract';
-import { resolveEnv } from './env';
-import { REPLICA_ID } from './replica';
-import type { RouteNormalizer } from './routes';
-
-/**
- * Semua instrumen hidup di Registry sendiri, bukan di global default
- * prom-client. Kalau aplikasi sudah memakai prom-client untuk keperluan lain,
- * keduanya tidak saling menimpa dan /metrics kita tetap sesuai kontrak.
- */
+} from "./contract";
+import { resolveEnv } from "./env";
+import { REPLICA_ID } from "./replica";
+import type { RouteNormalizer } from "./routes";
 
 export interface MetricsOptions {
   service: string;
-  /** Nama environment. Tidak pernah kosong — lihat src/env.ts. */
   env: string;
   version: string;
   commit: string;
   tier: string;
-  /** Nama publik, deskripsi singkat, dan status "tampil di status page publik". */
   displayName: string;
   description: string;
   public: boolean;
-  /** Sertakan metrik proses Node (heap, event loop lag, GC). */
   defaultMetrics: boolean;
 }
 
@@ -54,14 +45,14 @@ export class Metrics {
 
     this.requests = new Counter({
       name: METRIC.requests,
-      help: 'Total HTTP request yang diterima server.',
+      help: "Total HTTP requests received by the server.",
       labelNames: LABELS.requests as unknown as string[],
       registers: [registry],
     });
 
     this.duration = new Histogram({
       name: METRIC.duration,
-      help: 'Durasi penanganan HTTP request dalam detik.',
+      help: "HTTP request handling duration in seconds.",
       labelNames: LABELS.duration as unknown as string[],
       buckets: [...DURATION_BUCKETS],
       registers: [registry],
@@ -69,57 +60,56 @@ export class Metrics {
 
     this.responseBytes = new Counter({
       name: METRIC.responseBytes,
-      help: 'Total byte body respons yang dikirim server.',
+      help: "Total response body bytes sent by the server.",
       labelNames: LABELS.responseBytes as unknown as string[],
       registers: [registry],
     });
 
     this.inFlight = new Gauge({
       name: METRIC.inFlight,
-      help: 'Jumlah HTTP request yang sedang diproses.',
+      help: "Number of HTTP requests currently being processed.",
       labelNames: LABELS.inFlight as unknown as string[],
       registers: [registry],
     });
 
     this.buildInfo = new Gauge({
       name: METRIC.buildInfo,
-      help: 'Selalu 1. Label membawa identitas build & versi kontrak.',
+      help: "Always 1. Labels carry build identity and contract version.",
       labelNames: LABELS.buildInfo as unknown as string[],
       registers: [registry],
     });
 
     this.routeCardinality = new Gauge({
       name: METRIC.routeCardinality,
-      help: 'Jumlah template route unik yang sedang dilacak service ini.',
+      help: "Number of unique route templates tracked by this service.",
       labelNames: LABELS.routeCardinality as unknown as string[],
       registers: [registry],
     });
 
     this.routeOverflow = new Counter({
       name: METRIC.routeOverflow,
-      help: 'Jumlah request yang jatuh ke label route __other__.',
+      help: "Number of requests assigned to the __other__ route label.",
       labelNames: LABELS.routeOverflow as unknown as string[],
       registers: [registry],
     });
 
     this.dependency = new Histogram({
       name: METRIC.dependency,
-      help: 'Durasi panggilan ke dependency eksternal.',
+      help: "External dependency call duration.",
       labelNames: LABELS.dependency as unknown as string[],
       buckets: [...DEPENDENCY_BUCKETS],
       registers: [registry],
     });
 
-    // Sentuh seri berlabel `service` supaya ia ada sejak proses start, bukan
-    // baru muncul setelah request pertama. Panel "in-flight" dan "overflow"
-    // di L1 jadi menampilkan 0 alih-alih "no data" untuk service sehat yang
-    // sedang sepi — dan "no data" tidak bisa dibedakan dari instrumentasi
-    // yang rusak. Implementasi Go melakukan hal yang sama.
-    this.inFlight.set({ service: options.service, env: options.env, replica_id: REPLICA_ID }, 0);
-    this.routeOverflow.inc({ service: options.service, env: options.env, replica_id: REPLICA_ID }, 0);
+    this.inFlight.set(
+      { service: options.service, env: options.env, replica_id: REPLICA_ID },
+      0
+    );
+    this.routeOverflow.inc(
+      { service: options.service, env: options.env, replica_id: REPLICA_ID },
+      0
+    );
 
-    // app_build_info di-set sekali dan tidak pernah berubah selama proses
-    // hidup. Ia yang membuat penanda deploy dan deteksi drift kontrak bekerja.
     this.buildInfo.set(
       {
         service: options.service,
@@ -128,7 +118,7 @@ export class Metrics {
         commit: options.commit,
         tier: options.tier,
         contract_version: CONTRACT_VERSION,
-        lang: 'node',
+        lang: "node",
         display_name: options.displayName,
         description: options.description,
         public: String(options.public),
@@ -142,14 +132,13 @@ export class Metrics {
     }
   }
 
-  /**
-   * obs_route_cardinality adalah gauge yang nilainya hanya diketahui saat
-   * ditanya, jadi ia disegarkan tepat sebelum registry di-render — bukan
-   * di-set tiap request.
-   */
   bindRouteStats(normalizer: RouteNormalizer): void {
     this.routeCardinality.set(
-      { service: this.options.service, env: this.options.env, replica_id: REPLICA_ID },
+      {
+        service: this.options.service,
+        env: this.options.env,
+        replica_id: REPLICA_ID,
+      },
       normalizer.cardinality
     );
   }
