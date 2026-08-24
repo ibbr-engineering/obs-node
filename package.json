@@ -27,6 +27,8 @@
   "files": [
     "dist",
     "README.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
     "LICENSE"
   ],
   "scripts": {
