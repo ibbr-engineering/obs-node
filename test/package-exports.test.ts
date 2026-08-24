@@ -9,17 +9,18 @@ import { repoRoot } from "./helpers";
 
 test("package exports resolve to JavaScript and declarations in the tarball", () => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "obs-node-pack-"));
-  const packed = JSON.parse(
-    execFileSync("npm", ["pack", repoRoot(), "--json"], {
-      cwd: workspace,
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        npm_config_cache: path.join(workspace, ".npm-cache"),
-      },
-    })
-  ) as Array<{ filename: string }>;
-  const tarball = path.join(workspace, packed[0].filename);
+  const output = execFileSync("npm", ["pack", repoRoot(), "--silent"], {
+    cwd: workspace,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      npm_config_cache: path.join(workspace, ".npm-cache"),
+    },
+  });
+  const lines = output.trim().split("\n");
+  const filename = lines[lines.length - 1];
+  assert.ok(filename);
+  const tarball = path.join(workspace, filename);
   execFileSync("tar", ["-xzf", tarball], { cwd: workspace });
 
   const packageRoot = path.join(workspace, "package");
