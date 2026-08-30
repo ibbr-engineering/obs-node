@@ -76,7 +76,7 @@ as `obs.push.failed` and retried at the next interval.
 | `env`                 |       no | `ENV`, `APP_ENV`, `NODE_ENV`, or `unknown`               | Deployment environment.                              |
 | `transport`           |       no | `scrape`                                                 | `scrape`, `push`, or `both`.                         |
 | `metricsPath`         |       no | `/metrics`                                               | Prometheus endpoint path.                            |
-| `otlpEndpoint`        |       no | `OTEL_EXPORTER_OTLP_ENDPOINT` or `http://localhost:4318` | OTLP/HTTP base URL. Remote endpoints must use HTTPS. |
+| `otlpEndpoint`        |       no | `OTEL_EXPORTER_OTLP_ENDPOINT` or `http://localhost:4318` | OTLP/HTTP base URL. Plain HTTP is allowed for loopback and private (RFC1918) hosts; public hosts require HTTPS. |
 | `pushIntervalMs`      |       no | `30000`                                                  | Positive scheduled push interval.                    |
 | `maxRoutes`           |       no | `40`                                                     | Route-template cardinality cap; minimum 2.           |
 | `routeConfig`         |       no | empty                                                    | A routes configuration object or local YAML path.    |

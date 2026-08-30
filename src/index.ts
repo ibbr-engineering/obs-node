@@ -7,6 +7,7 @@ import {
 import { sanitizeLabels } from "./guard";
 import { Metrics } from "./metrics";
 import { resolveEnv } from "./env";
+import { allowsPlaintextOtlp } from "./endpoint";
 import { OtlpPusher } from "./otlp";
 import { REPLICA_ID } from "./replica";
 import { RouteNormalizer, type RouterTable, type RoutesConfig } from "./routes";
@@ -327,13 +328,9 @@ function validateConfig(config: ObservabilityConfig): void {
     throw new ObservabilityConfigError("otlpEndpoint must be a valid URL");
   }
 
-  const localHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
-  if (
-    url.protocol !== "https:" &&
-    !(url.protocol === "http:" && localHosts.has(url.hostname))
-  ) {
+  if (!allowsPlaintextOtlp(url)) {
     throw new ObservabilityConfigError(
-      "otlpEndpoint must use HTTPS outside localhost"
+      "otlpEndpoint must use HTTPS for public hosts"
     );
   }
 }

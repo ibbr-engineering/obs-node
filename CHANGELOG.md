@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file. Releases use
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-08-30
+
+### Fixed
+
+- Allow plain HTTP OTLP to private VPC addresses (RFC1918), matching the
+  centralized collector deployed with Direct VPC egress.
+
 ## [1.1.0] - 2026-08-24
 
 ### Added

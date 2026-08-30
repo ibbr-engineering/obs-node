@@ -39,32 +39,43 @@ test("config rejects unsafe numeric limits", () => {
   assertConfigError({ ...baseConfig, pushIntervalMs: -1 });
 });
 
-test("config allows HTTP OTLP only for local collectors", () => {
-  const local = observability.initObservability({
-    ...baseConfig,
-    transport: "push",
-    otlpEndpoint: "http://localhost:4318",
-    pushIntervalMs: 60_000,
-  });
-  local.shutdown();
+test("config allows HTTP OTLP for loopback and private VPC hosts", () => {
+  for (const endpoint of [
+    "http://localhost:4318",
+    "http://10.184.0.3:4318",
+    "http://172.16.0.1:4318",
+    "http://192.168.1.1:4318",
+  ]) {
+    const obs = observability.initObservability({
+      ...baseConfig,
+      transport: "push",
+      otlpEndpoint: endpoint,
+      pushIntervalMs: 60_000,
+    });
+    obs.shutdown();
+  }
 
-  const endpoint = "http://secret:token@collector.example.com:4318";
-  assert.throws(
-    () =>
-      observability.initObservability({
-        ...baseConfig,
-        transport: "push",
-        otlpEndpoint: endpoint,
-      }),
-    (error: unknown) => {
-      const message = (error as Error).message;
-      assert.strictEqual((error as Error).name, "ObservabilityConfigError");
-      assert.ok(!message.includes("secret"));
-      assert.ok(!message.includes("token"));
-      assert.ok(!message.includes("collector.example.com"));
-      return true;
-    }
-  );
+  for (const endpoint of [
+    "http://secret:token@collector.example.com:4318",
+    "http://8.8.8.8:4318",
+  ]) {
+    assert.throws(
+      () =>
+        observability.initObservability({
+          ...baseConfig,
+          transport: "push",
+          otlpEndpoint: endpoint,
+        }),
+      (error: unknown) => {
+        const message = (error as Error).message;
+        assert.strictEqual((error as Error).name, "ObservabilityConfigError");
+        assert.ok(!message.includes("secret"));
+        assert.ok(!message.includes("token"));
+        assert.ok(!message.includes("collector.example.com"));
+        return true;
+      }
+    );
+  }
 });
 
 test("OTLP explicit push rejects while scheduled failure is logged", async () => {
