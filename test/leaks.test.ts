@@ -253,11 +253,14 @@ test("single-shot bodies reuse Node's measured length", async () => {
     measure(req, res, () => res.end("héllo wörld"))
   );
   const port = await listen(server);
-  await new Promise<void>((resolve) =>
-    http.get({ port, path: "/x" }, (r) => {
-      r.resume();
-      r.on("end", () => resolve());
-    })
+  // Explicit IPv4 host: Node 18 resolves "localhost" to ::1 without fallback.
+  await new Promise<void>((resolve, reject) =>
+    http
+      .get({ host: "127.0.0.1", port, path: "/x" }, (r) => {
+        r.resume();
+        r.on("end", () => resolve());
+      })
+      .on("error", reject)
   );
   await new Promise((resolve) => setTimeout(resolve, 20));
   const body = await obs.render();
