@@ -1,9 +1,17 @@
 import * as http from "http";
 import * as https from "https";
 import { URL } from "url";
+import { promisify } from "util";
+import * as zlib from "zlib";
 import type { Registry } from "prom-client";
 
 const AGGREGATION_TEMPORALITY_CUMULATIVE = 2;
+const PUSH_TIMEOUT_MS = 10_000;
+const gzip = promisify(zlib.gzip);
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
 
 export interface OtlpPusherOptions {
   endpoint: string;
@@ -11,6 +19,8 @@ export interface OtlpPusherOptions {
   intervalMs: number;
   serviceName: string;
   headers?: Record<string, string>;
+  compression?: "gzip" | "none";
+  timeoutMs?: number;
   onError?: (err: Error) => void;
   beforeCollect?: () => void;
 }
@@ -87,27 +97,59 @@ export function toOtlpJson(
   return out;
 }
 
+interface HistogramGroup {
+  labels: Record<string, string | number>;
+  size: number;
+  buckets: Array<[number, number]>;
+  sum: number;
+  count: number;
+}
+
+function seriesSize(labels: Record<string, string | number>): number {
+  let n = 0;
+  for (const k in labels) if (k !== "le") n++;
+  return n;
+}
+
+function sameSeries(
+  labels: Record<string, string | number>,
+  group: HistogramGroup
+): boolean {
+  let n = 0;
+  for (const k in labels) {
+    if (k === "le") continue;
+    if (labels[k] !== group.labels[k]) return false;
+    n++;
+  }
+  return n === group.size;
+}
+
 function histogramToOtlp(
   m: PromMetric,
   startTimeNano: string,
   nowNano: string
 ): unknown[] {
-  const groups = new Map<
-    string,
-    {
-      labels: Record<string, string | number>;
-      buckets: Array<[number, number]>;
-      sum: number;
-      count: number;
-    }
-  >();
+  const groups = new Map<string, HistogramGroup>();
+  let previous: HistogramGroup | undefined;
 
   for (const v of m.values) {
-    const key = labelKey(v.labels);
-    let g = groups.get(key);
+    // prom-client emits a series' buckets, sum and count back to back, so
+    // the previous group usually matches without building a sorted key.
+    let g = previous && sameSeries(v.labels, previous) ? previous : undefined;
     if (!g) {
-      g = { labels: v.labels, buckets: [], sum: 0, count: 0 };
-      groups.set(key, g);
+      const key = labelKey(v.labels);
+      g = groups.get(key);
+      if (!g) {
+        g = {
+          labels: v.labels,
+          size: seriesSize(v.labels),
+          buckets: [],
+          sum: 0,
+          count: 0,
+        };
+        groups.set(key, g);
+      }
+      previous = g;
     }
 
     if (v.metricName?.endsWith("_bucket")) {
@@ -165,6 +207,7 @@ function histogramToOtlp(
 
 export class OtlpPusher {
   private timer?: NodeJS.Timeout;
+  private inFlight?: Promise<void>;
   private readonly startTimeNano = String(Date.now() * 1e6);
   private readonly url: URL;
 
@@ -176,6 +219,9 @@ export class OtlpPusher {
   start(): void {
     if (this.timer) return;
     this.timer = setInterval(() => {
+      // A tick that lands while a push is still running is skipped rather
+      // than stacking another payload behind a slow collector.
+      if (this.inFlight) return;
       void this.pushOnce().catch((err: Error) => this.options.onError?.(err));
     }, this.options.intervalMs);
     this.timer.unref?.();
@@ -187,13 +233,40 @@ export class OtlpPusher {
     this.timer = undefined;
   }
 
-  async pushOnce(): Promise<void> {
-    this.options.beforeCollect?.();
-    const metrics =
-      (await this.options.registry.getMetricsAsJSON()) as unknown as PromMetric[];
-    const nowNano = String(Date.now() * 1e6);
+  /** Concurrent callers share the push that is already in flight. */
+  pushOnce(): Promise<void> {
+    if (!this.inFlight) {
+      this.inFlight = this.push().finally(() => {
+        this.inFlight = undefined;
+      });
+    }
+    return this.inFlight;
+  }
 
-    const body = JSON.stringify({
+  private async push(): Promise<void> {
+    this.options.beforeCollect?.();
+    // Collect and convert one metric at a time, yielding in between, so a
+    // large registry never blocks the event loop in a single long task.
+    const otlpMetrics: unknown[] = [];
+    const nowNano = String(Date.now() * 1e6);
+    const registered =
+      this.options.registry.getMetricsAsArray() as unknown as Array<{
+        get(): Promise<PromMetric> | PromMetric;
+      }>;
+    for (const metric of registered) {
+      const collected = await metric.get();
+      await yieldToEventLoop();
+      for (const m of toOtlpJson(
+        [collected],
+        this.startTimeNano,
+        nowNano
+      ) as unknown[]) {
+        otlpMetrics.push(m);
+      }
+      await yieldToEventLoop();
+    }
+
+    const json = JSON.stringify({
       resourceMetrics: [
         {
           resource: {
@@ -207,18 +280,32 @@ export class OtlpPusher {
           scopeMetrics: [
             {
               scope: {},
-              metrics: toOtlpJson(metrics, this.startTimeNano, nowNano),
+              metrics: otlpMetrics,
             },
           ],
         },
       ],
     });
 
-    await this.post(body);
+    if ((this.options.compression ?? "gzip") === "gzip") {
+      await this.post(await gzip(json), "gzip");
+    } else {
+      await this.post(Buffer.from(json), undefined);
+    }
   }
 
-  private post(body: string): Promise<void> {
+  private post(body: Buffer, encoding: string | undefined): Promise<void> {
     return new Promise((resolve, reject) => {
+      // Every exit path (error, timeout, reset mid-body) must settle exactly
+      // once, otherwise the request and its closures are retained forever.
+      let settled = false;
+      const settle = (err?: Error): void => {
+        if (settled) return;
+        settled = true;
+        if (err) reject(err);
+        else resolve();
+      };
+
       const transport = this.url.protocol === "https:" ? https : http;
       const req = transport.request(
         {
@@ -227,26 +314,34 @@ export class OtlpPusher {
           port: this.url.port,
           path: this.url.pathname,
           method: "POST",
-          timeout: 10_000,
+          timeout: this.options.timeoutMs ?? PUSH_TIMEOUT_MS,
           headers: {
             "content-type": "application/json",
-            "content-length": Buffer.byteLength(body),
+            "content-length": body.length,
+            ...(encoding ? { "content-encoding": encoding } : {}),
             ...this.options.headers,
           },
         },
         (res) => {
-          res.resume();
           const status = res.statusCode ?? 0;
+          res.on("error", (err) => settle(err));
           res.on("end", () =>
             status >= 200 && status < 300
-              ? resolve()
-              : reject(new Error(`collector returned HTTP ${status}`))
+              ? settle()
+              : settle(new Error(`collector returned HTTP ${status}`))
           );
+          res.on("close", () =>
+            settle(new Error("collector closed the response early"))
+          );
+          res.resume();
         }
       );
 
-      req.on("error", reject);
+      req.on("error", (err) => settle(err));
       req.on("timeout", () => req.destroy(new Error("push OTLP timeout")));
+      req.on("close", () =>
+        settle(new Error("collector closed the connection"))
+      );
       req.end(body);
     });
   }

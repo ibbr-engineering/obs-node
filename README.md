@@ -13,14 +13,14 @@ tarballs. npm registry and GitHub Packages publishing are not supported.
 Pin production installations to a semantic-version tag:
 
 ```bash
-npm install "git+https://github.com/ibbr-engineering/obs-node.git#v1.1.0"
+npm install "git+https://github.com/ibbr-engineering/obs-node.git#v1.2.0"
 ```
 
 The tarball attached to the matching GitHub Release is npm-compatible and can
 also be installed directly:
 
 ```bash
-npm install ./ibbr-engineering-observability-1.1.0.tgz
+npm install ./ibbr-engineering-observability-1.2.0.tgz
 ```
 
 Do not install from `main`; a branch is mutable and cannot identify the exact
@@ -57,9 +57,14 @@ operations:
 - `middleware()` measures HTTP requests.
 - `metricsHandler()` serves Prometheus exposition text.
 - `render()` returns the exposition text for diagnostics and tests.
-- `time()` measures a dependency operation.
+- `time()` measures a dependency operation. Distinct `(dependency, operation)`
+  pairs are capped by `maxDependencySeries`; later pairs are recorded as
+  `__other__`.
 - `pushOnce()` performs one explicit OTLP push and rejects on failure.
-- `shutdown()` stops scheduled pushes and is safe to call repeatedly.
+  Concurrent calls share the push already in flight.
+- `shutdown()` stops scheduled pushes, performs one final push for `push` and
+  `both`, releases the registry, and returns a promise. It is safe to call
+  repeatedly.
 
 Invalid initialization throws `ObservabilityConfigError`. Runtime push failures
 do not terminate the application; scheduled failures are reported to `logger`
@@ -77,17 +82,24 @@ as `obs.push.failed` and retried at the next interval.
 | `transport`           |       no | `scrape`                                                 | `scrape`, `push`, or `both`.                         |
 | `metricsPath`         |       no | `/metrics`                                               | Prometheus endpoint path.                            |
 | `otlpEndpoint`        |       no | `OTEL_EXPORTER_OTLP_ENDPOINT` or `http://localhost:4318` | OTLP/HTTP base URL. Plain HTTP is allowed for loopback and private (RFC1918) hosts; public hosts require HTTPS. |
-| `pushIntervalMs`      |       no | `30000`                                                  | Positive scheduled push interval.                    |
+| `pushIntervalMs`      |       no | `30000`                                                  | Positive scheduled push interval. Ticks that land while a push is running are skipped. |
+| `otlpCompression`     |       no | `gzip`                                                   | OTLP request body encoding: `gzip` or `none`.        |
 | `maxRoutes`           |       no | `40`                                                     | Route-template cardinality cap; minimum 2.           |
+| `maxUnmatchedRoutes`  |       no | `maxRoutes / 10` (minimum 1)                             | Share of `maxRoutes` available to heuristic templates of paths the router table did not match, so 404 scanners cannot crowd out real routes. |
+| `maxDependencySeries` |       no | `200`                                                    | Cap on distinct `time()` dependency/operation pairs. |
 | `routeConfig`         |       no | empty                                                    | A routes configuration object or local YAML path.    |
 | `defaultMetrics`      |       no | `true`                                                   | Enable Node.js runtime metrics.                      |
 | `unmatchedSampleRate` |       no | `0.01`                                                   | Fraction of unmatched paths sent to the logger.      |
 | `logger`              |       no | structured stdout                                        | Receives initialization and transport events.        |
 
+Label bounds: `method` is one of `GET`, `POST`, `PUT`, `PATCH`, `DELETE`,
+`HEAD`, `OPTIONS`, or `OTHER`. Route templates that look like PHI are recorded
+as `__other__`.
+
 Transport behavior:
 
 - `scrape` exposes the registry through `metricsHandler()` or an adapter.
-- `push` schedules OTLP/HTTP JSON delivery and does not register `/metrics` in
+- `push` schedules gzip-compressed OTLP/HTTP JSON delivery and does not register `/metrics` in
   framework adapters.
 - `both` exposes and pushes the same registry, preserving metric and label
   parity during migrations.

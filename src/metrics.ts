@@ -2,6 +2,7 @@ import {
   Counter,
   Gauge,
   Histogram,
+  type Metric,
   Registry,
   collectDefaultMetrics,
 } from "prom-client";
@@ -15,6 +16,18 @@ import {
 import { resolveEnv } from "./env";
 import { REPLICA_ID } from "./replica";
 import type { RouteNormalizer } from "./routes";
+
+// prom-client never disposes the event-loop monitor and GC observer created by
+// collectDefaultMetrics, so they are created once per process and shared.
+let sharedDefaultMetrics: Registry | undefined;
+
+function defaultMetricsRegistry(): Registry {
+  if (!sharedDefaultMetrics) {
+    sharedDefaultMetrics = new Registry();
+    collectDefaultMetrics({ register: sharedDefaultMetrics });
+  }
+  return sharedDefaultMetrics;
+}
 
 export interface MetricsOptions {
   service: string;
@@ -128,7 +141,9 @@ export class Metrics {
     );
 
     if (options.defaultMetrics) {
-      collectDefaultMetrics({ register: registry });
+      for (const metric of defaultMetricsRegistry().getMetricsAsArray()) {
+        registry.registerMetric(metric as unknown as Metric<string>);
+      }
     }
   }
 
@@ -146,6 +161,10 @@ export class Metrics {
   async render(normalizer?: RouteNormalizer): Promise<string> {
     if (normalizer) this.bindRouteStats(normalizer);
     return this.registry.metrics();
+  }
+
+  dispose(): void {
+    this.registry.clear();
   }
 
   get contentType(): string {
