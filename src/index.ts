@@ -10,12 +10,19 @@ import { resolveEnv } from "./env";
 import { allowsPlaintextOtlp } from "./endpoint";
 import { OtlpPusher } from "./otlp";
 import { REPLICA_ID } from "./replica";
-import { RouteNormalizer, type RouterTable, type RoutesConfig } from "./routes";
+import {
+  RouteNormalizer,
+  stripQuery,
+  type RouterTable,
+  type RoutesConfig,
+} from "./routes";
 
 export { CONTRACT_VERSION, OVERFLOW_ROUTE, statusClass } from "./contract";
 export {
   RouteNormalizer,
+  compileRouterTable,
   heuristic,
+  type RouteSpec,
   type RouterTable,
   type RoutesConfig,
 } from "./routes";
@@ -48,12 +55,18 @@ export interface ObservabilityConfig {
   routeConfig?: string | RoutesConfig;
   routerTable?: RouterTable;
   maxRoutes?: number;
+  /** Budget for heuristic templates of paths the router table did not match. */
+  maxUnmatchedRoutes?: number;
+  /** Cap on distinct (dependency, operation) pairs recorded by time(). */
+  maxDependencySeries?: number;
 
   metricsPath?: string;
   defaultMetrics?: boolean;
 
   otlpEndpoint?: string;
   pushIntervalMs?: number;
+  /** OTLP request body encoding. Defaults to gzip. */
+  otlpCompression?: "gzip" | "none";
 
   unmatchedSampleRate?: number;
   logger?: (event: Record<string, unknown>) => void;
@@ -73,7 +86,42 @@ export interface Observability {
   time<T>(timing: DependencyTiming, fn: () => Promise<T>): Promise<T>;
   render(): Promise<string>;
   pushOnce(): Promise<void>;
-  shutdown(): void;
+  /**
+   * Stops the push timer, flushes once more (bounded by the push timeout) and
+   * releases the registry. Safe to call more than once.
+   */
+  shutdown(): Promise<void>;
+}
+
+const DEFAULT_MAX_DEPENDENCY_SERIES = 200;
+
+const KNOWN_METHODS = new Set([
+  "GET",
+  "POST",
+  "PUT",
+  "PATCH",
+  "DELETE",
+  "HEAD",
+  "OPTIONS",
+]);
+
+function normalizeMethod(raw: unknown): string {
+  const method = String(raw ?? "GET").toUpperCase();
+  return KNOWN_METHODS.has(method) ? method : "OTHER";
+}
+
+/** Declared body length, or null when the body must be counted. */
+function contentLength(res: any): number | null {
+  if (typeof res.getHeader !== "function") return null;
+  const status = Number(res.statusCode ?? 0);
+  if (status === 204 || status === 304 || (status >= 100 && status < 200)) {
+    return null;
+  }
+  const raw = res.getHeader("content-length");
+  const value = Number(Array.isArray(raw) ? raw[0] : raw);
+  return raw !== undefined && Number.isInteger(value) && value >= 0
+    ? value
+    : null;
 }
 
 const defaultLogger = (event: Record<string, unknown>): void => {
@@ -104,6 +152,7 @@ export function initObservability(config: ObservabilityConfig): Observability {
 
   const normalizer = new RouteNormalizer({
     maxRoutes: config.maxRoutes,
+    maxUnmatchedRoutes: config.maxUnmatchedRoutes,
     routeConfig: config.routeConfig,
     routerTable: config.routerTable,
     onUnmatched: (method, path) => {
@@ -131,6 +180,7 @@ export function initObservability(config: ObservabilityConfig): Observability {
       registry: metrics.registry,
       intervalMs: config.pushIntervalMs ?? 30_000,
       serviceName: service,
+      compression: config.otlpCompression,
       beforeCollect: () => metrics.bindRouteStats(normalizer),
       onError: (err) =>
         log({
@@ -143,6 +193,60 @@ export function initObservability(config: ObservabilityConfig): Observability {
     pusher.start();
   }
 
+  const baseLabels = sanitizeLabels({ service, env, replica_id: REPLICA_ID });
+  const inFlight = metrics.inFlight.labels(baseLabels);
+
+  // Every key component is bounded (route by the normalizer, method by
+  // KNOWN_METHODS, status by the HTTP status range), so these caches are too.
+  const routeChildren = new Map<
+    string,
+    {
+      duration: ReturnType<typeof metrics.duration.labels>;
+      bytes: ReturnType<typeof metrics.responseBytes.labels>;
+    }
+  >();
+  const requestChildren = new Map<
+    string,
+    ReturnType<typeof metrics.requests.labels>
+  >();
+  let recordFailureLogged = false;
+
+  function record(
+    method: string,
+    route: string,
+    status: number,
+    seconds: number,
+    bytes: number
+  ): void {
+    const cls = statusClass(status);
+    const key = `${method} ${cls} ${route}`;
+    let children = routeChildren.get(key);
+    if (!children) {
+      const labels = { ...baseLabels, method, route, status_class: cls };
+      children = {
+        duration: metrics.duration.labels(labels),
+        bytes: metrics.responseBytes.labels(labels),
+      };
+      routeChildren.set(key, children);
+    }
+    const statusKey = `${status} ${key}`;
+    let requests = requestChildren.get(statusKey);
+    if (!requests) {
+      requests = metrics.requests.labels({
+        ...baseLabels,
+        method,
+        route,
+        status_class: cls,
+        status: String(status),
+      });
+      requestChildren.set(statusKey, requests);
+    }
+
+    children.duration.observe(seconds);
+    requests.inc();
+    children.bytes.inc(bytes);
+  }
+
   function middleware() {
     return function observabilityMiddleware(
       req: any,
@@ -150,20 +254,28 @@ export function initObservability(config: ObservabilityConfig): Observability {
       next: (err?: any) => void
     ): void {
       const path: string = req.originalUrl ?? req.url ?? "/";
+      const pathname = stripQuery(path);
 
-      if (normalizer.shouldIgnore(path) || path.split("?")[0] === metricsPath) {
+      if (pathname === metricsPath || normalizer.shouldIgnore(pathname)) {
         return next();
       }
 
-      const method = String(req.method ?? "GET").toUpperCase();
+      const method = normalizeMethod(req.method);
       const startedAt = process.hrtime.bigint();
-      metrics.inFlight.inc({ service, env, replica_id: REPLICA_ID });
+      inFlight.inc();
 
       let bytesOut = 0;
+      let wrote = false;
+      let declaredLength: number | null | undefined;
       const origWrite = res.write;
       const origEnd = res.end;
       const countChunk = (chunk: any, encoding?: any): void => {
         if (!chunk) return;
+        if (declaredLength === undefined) declaredLength = contentLength(res);
+        if (declaredLength !== null) return;
+        countBytes(chunk, encoding);
+      };
+      const countBytes = (chunk: any, encoding?: any): void => {
         try {
           bytesOut += Buffer.isBuffer(chunk)
             ? chunk.length
@@ -176,12 +288,26 @@ export function initObservability(config: ObservabilityConfig): Observability {
         } catch {}
       };
       res.write = function patchedWrite(chunk: any, encoding?: any, cb?: any) {
+        wrote = true;
         countChunk(chunk, encoding);
         return origWrite.call(this, chunk, encoding, cb);
       };
       res.end = function patchedEnd(chunk: any, encoding?: any, cb?: any) {
-        if (typeof chunk !== "function") countChunk(chunk, encoding);
-        return origEnd.call(this, chunk, encoding, cb);
+        const body = typeof chunk === "function" ? undefined : chunk;
+        if (wrote || !body) {
+          countChunk(body, encoding);
+          return origEnd.call(this, chunk, encoding, cb);
+        }
+        if (declaredLength === undefined) declaredLength = contentLength(res);
+        const result = origEnd.call(this, chunk, encoding, cb);
+        if (declaredLength === null) {
+          // Node already measured a single-shot body to build the implicit
+          // Content-Length header; reuse it instead of measuring twice.
+          const measured = (this as any)?._contentLength;
+          if (typeof measured === "number") bytesOut += measured;
+          else countBytes(body, encoding);
+        }
+        return result;
       };
 
       let finished = false;
@@ -191,25 +317,31 @@ export function initObservability(config: ObservabilityConfig): Observability {
         res.removeListener("finish", onDone);
         res.removeListener("close", onDone);
 
-        metrics.inFlight.dec({ service, env, replica_id: REPLICA_ID });
-
-        const seconds = Number(process.hrtime.bigint() - startedAt) / 1e9;
-        const status = Number(res.statusCode ?? 0);
-
-        const route = normalizer.normalize(method, routeHint(req) ?? path);
-
-        const labels = sanitizeLabels({
-          service,
-          env,
-          method,
-          route,
-          status_class: statusClass(status),
-          replica_id: REPLICA_ID,
-        });
-
-        metrics.duration.observe(labels, seconds);
-        metrics.requests.inc({ ...labels, status: String(status) });
-        metrics.responseBytes.inc(labels, bytesOut);
+        // Runs inside a response event: a throw here would be uncaught.
+        try {
+          inFlight.dec();
+          const seconds = Number(process.hrtime.bigint() - startedAt) / 1e9;
+          const status = Number(res.statusCode ?? 0);
+          const hint = routeHint(req);
+          const route = normalizer.normalize(
+            method,
+            hint ?? pathname,
+            hint !== undefined
+          );
+          const bytes =
+            typeof declaredLength === "number" ? declaredLength : bytesOut;
+          record(method, route, status, seconds, bytes);
+        } catch (err) {
+          if (!recordFailureLogged) {
+            recordFailureLogged = true;
+            log({
+              level: "warn",
+              msg: "obs.record.failed",
+              service,
+              error: (err as Error).message,
+            });
+          }
+        }
       };
 
       res.on("finish", onDone);
@@ -234,6 +366,23 @@ export function initObservability(config: ObservabilityConfig): Observability {
     };
   }
 
+  const maxDependencySeries =
+    config.maxDependencySeries ?? DEFAULT_MAX_DEPENDENCY_SERIES;
+  const dependencyPairs = new Set<string>();
+
+  function dependencyLabels(timing: DependencyTiming): {
+    dependency: string;
+    operation: string;
+  } {
+    const key = `${timing.dependency}\u0000${timing.operation}`;
+    if (dependencyPairs.has(key)) return timing;
+    if (dependencyPairs.size < maxDependencySeries) {
+      dependencyPairs.add(key);
+      return timing;
+    }
+    return { dependency: OVERFLOW_ROUTE, operation: OVERFLOW_ROUTE };
+  }
+
   async function time<T>(
     timing: DependencyTiming,
     fn: () => Promise<T>
@@ -246,18 +395,45 @@ export function initObservability(config: ObservabilityConfig): Observability {
       outcome = "error";
       throw err;
     } finally {
+      const { dependency, operation } = dependencyLabels(timing);
       metrics.dependency.observe(
         sanitizeLabels({
           service,
           env,
-          dependency: timing.dependency,
-          operation: timing.operation,
+          dependency,
+          operation,
           outcome: timing.outcome ?? outcome,
           replica_id: REPLICA_ID,
         }),
         Number(process.hrtime.bigint() - startedAt) / 1e9
       );
     }
+  }
+
+  let shutdownPromise: Promise<void> | undefined;
+  function shutdown(): Promise<void> {
+    if (!shutdownPromise) {
+      shutdownPromise = (async () => {
+        if (pusher) {
+          pusher.stop();
+          try {
+            await pusher.pushOnce();
+          } catch (err) {
+            log({
+              level: "warn",
+              msg: "obs.push.final_failed",
+              service,
+              error: (err as Error).message,
+            });
+          }
+        }
+        metrics.dispose();
+        routeChildren.clear();
+        requestChildren.clear();
+        dependencyPairs.clear();
+      })();
+    }
+    return shutdownPromise;
   }
 
   log({
@@ -278,7 +454,7 @@ export function initObservability(config: ObservabilityConfig): Observability {
     time,
     render: () => metrics.render(normalizer),
     pushOnce: () => pusher?.pushOnce() ?? Promise.resolve(),
-    shutdown: () => pusher?.stop(),
+    shutdown,
   };
 }
 
@@ -288,6 +464,12 @@ function validateConfig(config: ObservabilityConfig): void {
   }
   if (!["T1", "T2", "T3"].includes(config.tier)) {
     throw new ObservabilityConfigError("tier must be T1, T2, or T3");
+  }
+  if (
+    config.otlpCompression !== undefined &&
+    !["gzip", "none"].includes(config.otlpCompression)
+  ) {
+    throw new ObservabilityConfigError("otlpCompression must be gzip or none");
   }
   if (
     config.transport !== undefined &&
@@ -304,6 +486,16 @@ function validateConfig(config: ObservabilityConfig): void {
     throw new ObservabilityConfigError(
       "maxRoutes must be an integer greater than or equal to 2"
     );
+  }
+  for (const [name, value] of [
+    ["maxUnmatchedRoutes", config.maxUnmatchedRoutes],
+    ["maxDependencySeries", config.maxDependencySeries],
+  ] as const) {
+    if (value !== undefined && (!Number.isInteger(value) || value < 1)) {
+      throw new ObservabilityConfigError(
+        `${name} must be an integer greater than or equal to 1`
+      );
+    }
   }
   if (
     config.pushIntervalMs !== undefined &&

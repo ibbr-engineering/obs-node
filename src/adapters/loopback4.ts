@@ -5,7 +5,11 @@ import {
   type Observability,
   type ObservabilityConfig,
 } from "../index";
-import type { RouterTable } from "../routes";
+import {
+  compileRouterTable,
+  type RouteSpec,
+  type RouterTable,
+} from "../routes";
 
 interface ApiSpecPaths {
   paths?: Record<string, Record<string, unknown>>;
@@ -25,33 +29,30 @@ export interface Loopback4App {
   controller(ctor: unknown, name?: string): unknown;
 }
 
-interface CompiledRoute {
-  method: string;
-  re: RegExp;
-  template: string;
-}
+const OPENAPI_VERBS = new Set([
+  "get",
+  "put",
+  "post",
+  "delete",
+  "options",
+  "head",
+  "patch",
+  "trace",
+]);
 
 async function openApiRouterTable(app: Loopback4App): Promise<RouterTable> {
   const spec = await app.restServer.getApiSpec();
-  const compiled: CompiledRoute[] = [];
+  const routes: RouteSpec[] = [];
 
   for (const [openApiPath, methods] of Object.entries(spec.paths ?? {})) {
     const template = openApiPath.replace(/\{([^}]+)\}/g, ":$1");
-    const re = new RegExp(`^${template.replace(/:[^/]+/g, "[^/]+")}/?$`);
     for (const verb of Object.keys(methods ?? {})) {
-      compiled.push({ method: verb.toUpperCase(), re, template });
+      if (!OPENAPI_VERBS.has(verb.toLowerCase())) continue;
+      routes.push({ method: verb, template });
     }
   }
 
-  return {
-    match(method: string, path: string): string | undefined {
-      const wanted = method.toUpperCase();
-      for (const r of compiled) {
-        if (r.method === wanted && r.re.test(path)) return r.template;
-      }
-      return undefined;
-    },
-  };
+  return compileRouterTable(routes);
 }
 
 function buildMetricsController(obs: Observability, path: string) {

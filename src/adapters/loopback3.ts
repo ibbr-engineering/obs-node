@@ -3,27 +3,12 @@ import {
   type Observability,
   type ObservabilityConfig,
 } from "../index";
-import type { RouterTable } from "../routes";
-
-interface CompiledRoute {
-  method: string;
-  re: RegExp;
-  template: string;
-}
+import { compileRouterTable, type RouterTable } from "../routes";
 
 interface Lb3Route {
   verb?: string;
   method?: string;
   path?: string;
-}
-
-const PARAM = /:([A-Za-z0-9_]+)/g;
-
-function toRegExp(template: string): RegExp {
-  const escaped = template
-    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-    .replace(/:([A-Za-z0-9_]+)/g, "[^/]+");
-  return new RegExp(`^${escaped}/?$`);
 }
 
 function collectRoutes(app: any): Lb3Route[] {
@@ -51,47 +36,34 @@ function collectRoutes(app: any): Lb3Route[] {
 }
 
 export function loopback3RouterTable(app: any): RouterTable {
-  let compiled: CompiledRoute[] | undefined;
+  let compiled: RouterTable | undefined;
+  let size = 0;
   let attempts = 0;
 
-  const build = (): CompiledRoute[] => {
+  const build = (): RouterTable => {
     const restApiRoot: string = app?.get?.("restApiRoot") ?? "/api";
-    const routes = collectRoutes(app);
-
-    return routes
+    const routes = collectRoutes(app)
       .filter((r) => typeof r.path === "string")
       .map((r) => {
         const path = r.path as string;
-        const template = path.startsWith(restApiRoot)
-          ? path
-          : `${restApiRoot}${path}`;
         return {
-          method: String(r.verb ?? r.method ?? "GET").toUpperCase(),
-          re: toRegExp(template),
-          template,
+          method: String(r.verb ?? r.method ?? "GET"),
+          template: path.startsWith(restApiRoot)
+            ? path
+            : `${restApiRoot}${path}`,
         };
-      })
-      .sort((a, b) => {
-        const paramsA = (a.template.match(PARAM) ?? []).length;
-        const paramsB = (b.template.match(PARAM) ?? []).length;
-        if (paramsA !== paramsB) return paramsA - paramsB;
-        return b.template.length - a.template.length;
       });
+    size = routes.length;
+    return compileRouterTable(routes);
   };
 
   return {
     match(method: string, path: string): string | undefined {
-      if (!compiled || (compiled.length === 0 && attempts < 5)) {
+      if (!compiled || (size === 0 && attempts < 5)) {
         attempts += 1;
         compiled = build();
       }
-      const wanted = method.toUpperCase();
-      for (const r of compiled) {
-        if ((r.method === wanted || r.method === "ALL") && r.re.test(path)) {
-          return r.template;
-        }
-      }
-      return undefined;
+      return compiled.match(method, path);
     },
   };
 }
