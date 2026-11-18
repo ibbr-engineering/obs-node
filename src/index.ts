@@ -38,6 +38,18 @@ export class ObservabilityConfigError extends Error {
   }
 }
 
+const crawlerProducts = [
+  "facebookexternalhit", "facebookcatalog", "facebot",
+  "meta-externalads", "meta-externalagent", "meta-externalfetcher", "meta-webindexer",
+  "adsbot-google(?:-mobile(?:-apps)?)?", "googlebot(?:-image|-news|-video)?",
+  "mediapartners-google", "storebot-google", "google-inspectiontool",
+  "tiktokspider", "bytespider", "mobile/15e148thirdlandingpagefeinfra",
+];
+const crawlerUserAgent = new RegExp(
+  `(?:^|[\\s(;])(?:${crawlerProducts.join("|")})(?=$|[\\s/;)])`,
+  "i"
+);
+
 export interface ObservabilityConfig {
   service: string;
   version?: string;
@@ -216,7 +228,8 @@ export function initObservability(config: ObservabilityConfig): Observability {
     route: string,
     status: number,
     seconds: number,
-    bytes: number
+    bytes: number,
+    crawler: boolean
   ): void {
     const cls = statusClass(status);
     const key = `${method} ${cls} ${route}`;
@@ -229,7 +242,7 @@ export function initObservability(config: ObservabilityConfig): Observability {
       };
       routeChildren.set(key, children);
     }
-    const statusKey = `${status} ${key}`;
+    const statusKey = `${crawler ? "crawler " : ""}${status} ${key}`;
     let requests = requestChildren.get(statusKey);
     if (!requests) {
       requests = metrics.requests.labels({
@@ -238,6 +251,7 @@ export function initObservability(config: ObservabilityConfig): Observability {
         route,
         status_class: cls,
         status: String(status),
+        ...(crawler ? { crawler: "known" } : {}),
       });
       requestChildren.set(statusKey, requests);
     }
@@ -261,6 +275,8 @@ export function initObservability(config: ObservabilityConfig): Observability {
       }
 
       const method = normalizeMethod(req.method);
+      const userAgent = req.headers?.["user-agent"];
+      const crawler = typeof userAgent === "string" && crawlerUserAgent.test(userAgent);
       const startedAt = process.hrtime.bigint();
       inFlight.inc();
 
@@ -330,7 +346,7 @@ export function initObservability(config: ObservabilityConfig): Observability {
           );
           const bytes =
             typeof declaredLength === "number" ? declaredLength : bytesOut;
-          record(method, route, status, seconds, bytes);
+          record(method, route, status, seconds, bytes, crawler);
         } catch (err) {
           if (!recordFailureLogged) {
             recordFailureLogged = true;

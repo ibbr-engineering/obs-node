@@ -1,6 +1,6 @@
 {
   "name": "@ibbr-engineering/observability",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Node.js observability metrics client conforming to metrics-contract v1.5.0",
   "license": "Apache-2.0",
   "private": false,
