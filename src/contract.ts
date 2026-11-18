@@ -28,6 +28,7 @@ export const LABELS = {
     "status_class",
     "status",
     "replica_id",
+    "crawler",
   ],
   duration: ["service", "env", "method", "route", "status_class", "replica_id"],
   responseBytes: [

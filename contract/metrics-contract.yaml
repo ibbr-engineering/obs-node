@@ -17,7 +17,8 @@ metrics:
   - name: http_server_requests_total
     type: counter
     help: Total HTTP request yang diterima server.
-    labels: [service, env, method, route, status_class, status, replica_id]
+    labels: [service, env, method, route, status_class, status, replica_id, crawler]
+    # Node emits crawler=known only for recognized crawler user agents.
 
   - name: http_server_duration_seconds
     type: histogram
